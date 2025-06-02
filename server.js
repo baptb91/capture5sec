@@ -174,13 +174,16 @@ async function extractScreenshot(videoUrl, timestamp = 5, id = null) {
 
 // Endpoint principal pour les captures d'écran
 app.post('/screenshot', async (req, res) => {
-  const { videoUrl, timestamp = 5 } = req.body;
+  const { videoUrl, timestamp = 5, returnBase64 = false } = req.body;
   const requestId = uuidv4();
+  
+  console.log(`[${requestId}] Nouvelle requête depuis Make.com pour: ${videoUrl}`);
   
   if (!videoUrl) {
     return res.status(400).json({ 
       error: 'videoUrl is required',
-      requestId 
+      requestId,
+      success: false
     });
   }
   
@@ -188,7 +191,9 @@ app.post('/screenshot', async (req, res) => {
   if (processingQueue.size >= MAX_CONCURRENT_PROCESSING) {
     return res.status(429).json({
       error: 'Trop de requêtes en cours, réessayez plus tard',
-      requestId
+      requestId,
+      success: false,
+      retryAfter: 30
     });
   }
   
@@ -197,21 +202,37 @@ app.post('/screenshot', async (req, res) => {
   try {
     const result = await extractScreenshot(videoUrl, timestamp, requestId);
     
-    res.setHeader('Content-Type', 'image/jpeg');
-    res.setHeader('Content-Length', result.size);
-    res.setHeader('X-Request-ID', requestId);
+    // Pour Make.com, on peut retourner soit l'image directement, soit en base64
+    if (returnBase64) {
+      res.json({
+        success: true,
+        requestId,
+        image: result.image.toString('base64'),
+        size: result.size,
+        mimeType: 'image/jpeg',
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      // Retour direct de l'image (pour téléchargement)
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Content-Length', result.size);
+      res.setHeader('X-Request-ID', requestId);
+      res.setHeader('X-Success', 'true');
+      
+      res.send(result.image);
+    }
     
-    res.send(result.image);
-    
-    console.log(`[${requestId}] Capture envoyée avec succès`);
+    console.log(`[${requestId}] Capture envoyée avec succès à Make.com`);
     
   } catch (error) {
     console.error(`[${requestId}] Erreur finale:`, error.message);
     
     if (!res.headersSent) {
       res.status(500).json({
+        success: false,
         error: error.message,
-        requestId
+        requestId,
+        timestamp: new Date().toISOString()
       });
     }
   } finally {

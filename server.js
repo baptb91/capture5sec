@@ -2,6 +2,7 @@ const express = require('express');
 const { exec } = require('child_process');
 const fs = require('fs');
 const axios = require('axios');
+const { v4: uuidv4 } = require('uuid');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
@@ -21,9 +22,11 @@ app.post('/screenshot', async (req, res) => {
   const { videoUrl } = req.body;
   if (!videoUrl) return res.status(400).json({ error: 'videoUrl is required' });
 
-  const inputPath = '/tmp/input.mp4';
-  const outputPattern = '/tmp/output-%d.jpg';
-  const outputPath = '/tmp/output-1.jpg';
+  // Générer des chemins uniques pour chaque requête
+  const id = uuidv4();
+  const inputPath = `/tmp/input-${id}.mp4`;
+  const outputPattern = `/tmp/output-${id}-%d.jpg`;
+  const outputPath = `/tmp/output-${id}-1.jpg`;
 
   try {
     // Télécharger la vidéo
@@ -41,17 +44,17 @@ app.post('/screenshot', async (req, res) => {
       return res.status(500).json({ error: 'Échec du téléchargement de la vidéo.' });
     }
     const stats = fs.statSync(inputPath);
-    console.log('Vidéo téléchargée :', inputPath, 'Taille :', stats.size, 'octets');
+    console.log(`[${id}] Vidéo téléchargée :`, inputPath, 'Taille :', stats.size, 'octets');
 
     // Extraire une image à 5 secondes
     await new Promise((resolve, reject) => {
       exec(
         `ffmpeg -ss 00:00:05 -i ${inputPath} -frames:v 1 ${outputPattern} -y`,
         (error, stdout, stderr) => {
-          console.log('FFmpeg stdout:', stdout);
-          console.log('FFmpeg stderr:', stderr);
+          console.log(`[${id}] FFmpeg stdout:`, stdout);
+          console.log(`[${id}] FFmpeg stderr:`, stderr);
           if (error) {
-            console.error('Erreur FFmpeg:', error);
+            console.error(`[${id}] Erreur FFmpeg:`, error);
             return reject(stderr || error.message);
           }
           resolve();
@@ -64,7 +67,7 @@ app.post('/screenshot', async (req, res) => {
       return res.status(500).json({ error: 'FFmpeg n\'a pas créé l\'image de sortie.' });
     }
     const imgStats = fs.statSync(outputPath);
-    console.log('Image extraite :', outputPath, 'Taille :', imgStats.size, 'octets');
+    console.log(`[${id}] Image extraite :`, outputPath, 'Taille :', imgStats.size, 'octets');
 
     // Envoyer l'image extraite puis nettoyer
     res.setHeader('Content-Type', 'image/jpeg');
@@ -73,14 +76,15 @@ app.post('/screenshot', async (req, res) => {
     stream.on('close', () => {
       if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
       if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+      console.log(`[${id}] Fichiers temporaires supprimés.`);
     });
     stream.on('error', (err) => {
-      console.error('Erreur stream:', err);
+      console.error(`[${id}] Erreur stream:`, err);
       res.status(500).end();
       if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
       if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
     });
-    return; // On sort pour ne pas passer dans le finally
+    return; // On sort pour ne pas passer dans le catch
   } catch (err) {
     console.error('Erreur:', err);
     res.status(500).json({ error: err.toString() });

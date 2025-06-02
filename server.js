@@ -22,7 +22,8 @@ app.post('/screenshot', async (req, res) => {
   if (!videoUrl) return res.status(400).json({ error: 'videoUrl is required' });
 
   const inputPath = '/tmp/input.mp4';
-  const outputPath = '/tmp/output.jpg';
+  const outputPattern = '/tmp/output-%d.jpg';
+  const outputPath = '/tmp/output-1.jpg';
 
   try {
     // Télécharger la vidéo
@@ -39,16 +40,20 @@ app.post('/screenshot', async (req, res) => {
     if (!fs.existsSync(inputPath)) {
       return res.status(500).json({ error: 'Échec du téléchargement de la vidéo.' });
     }
-    console.log('Vidéo téléchargée :', inputPath);
+    const stats = fs.statSync(inputPath);
+    console.log('Vidéo téléchargée :', inputPath, 'Taille :', stats.size, 'octets');
 
     // Extraire une image à 5 secondes
     await new Promise((resolve, reject) => {
       exec(
-        `ffmpeg -ss 00:00:05 -i ${inputPath} -frames:v 1 ${outputPath} -y`,
+        `ffmpeg -ss 00:00:05 -i ${inputPath} -frames:v 1 ${outputPattern} -y`,
         (error, stdout, stderr) => {
           console.log('FFmpeg stdout:', stdout);
           console.log('FFmpeg stderr:', stderr);
-          if (error) return reject(stderr || error.message);
+          if (error) {
+            console.error('Erreur FFmpeg:', error);
+            return reject(stderr || error.message);
+          }
           resolve();
         }
       );
@@ -58,7 +63,8 @@ app.post('/screenshot', async (req, res) => {
     if (!fs.existsSync(outputPath)) {
       return res.status(500).json({ error: 'FFmpeg n\'a pas créé l\'image de sortie.' });
     }
-    console.log('Image extraite :', outputPath);
+    const imgStats = fs.statSync(outputPath);
+    console.log('Image extraite :', outputPath, 'Taille :', imgStats.size, 'octets');
 
     // Envoyer l'image extraite
     res.setHeader('Content-Type', 'image/jpeg');

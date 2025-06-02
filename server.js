@@ -66,14 +66,25 @@ app.post('/screenshot', async (req, res) => {
     const imgStats = fs.statSync(outputPath);
     console.log('Image extraite :', outputPath, 'Taille :', imgStats.size, 'octets');
 
-    // Envoyer l'image extraite
+    // Envoyer l'image extraite puis nettoyer
     res.setHeader('Content-Type', 'image/jpeg');
-    fs.createReadStream(outputPath).pipe(res);
+    const stream = fs.createReadStream(outputPath);
+    stream.pipe(res);
+    stream.on('close', () => {
+      if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+      if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+    });
+    stream.on('error', (err) => {
+      console.error('Erreur stream:', err);
+      res.status(500).end();
+      if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+      if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+    });
+    return; // On sort pour ne pas passer dans le finally
   } catch (err) {
     console.error('Erreur:', err);
     res.status(500).json({ error: err.toString() });
-  } finally {
-    // Nettoyage des fichiers temporaires
+    // Nettoyage en cas d'erreur
     if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
     if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
   }

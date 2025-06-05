@@ -4,34 +4,36 @@ const fs = require('fs');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
-const cluster = require('cluster');
-const os = require('os');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
 // ⏱️ TIMEOUTS OPTIMISÉS POUR MAKE.COM
 const TIMEOUTS = {
-  AXIOS_DOWNLOAD: 180000,        // 3 minutes pour télécharger (réduit)
+  AXIOS_DOWNLOAD: 180000,        // 3 minutes pour télécharger
   AXIOS_RESPONSE: 300000,        // 5 minutes timeout total axios
   FILE_WAIT: 30000,              // 30 secondes pour attendre fichier stable
-  FFMPEG_PROCESSING: 60000,      // 1 minute pour FFmpeg (largement suffisant pour 5s)
+  FFMPEG_PROCESSING: 60000,      // 1 minute pour FFmpeg
   DOWNLOAD_STREAM: 240000,       // 4 minutes pour le stream
-  REQUEST_TIMEOUT: 450000,       // 7.5 minutes timeout total (sous les 10 min de Make)
-  BATCH_DELAY: 1000,             // 1 seconde entre vidéos (réduit)
+  REQUEST_TIMEOUT: 450000,       // 7.5 minutes timeout total
+  BATCH_DELAY: 1000,             // 1 seconde entre vidéos
   MAKE_TIMEOUT_BUFFER: 60000     // Buffer de 1 minute avant timeout Make
 };
 
-// Configuration Express optimisée
-app.use(express.json({ limit: '10mb' })); // Réduit car on ne reçoit que des URLs
+// Configuration Express avec middleware de débogage
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' })); // Ajout pour form-data
 
-// Middleware de timeout optimisé pour Make.com
+// Middleware de débogage pour Make.com
 app.use((req, res, next) => {
-  // Timeout plus court pour éviter les timeouts Make.com
+  console.log(`📨 ${req.method} ${req.path}`);
+  console.log('📋 Headers:', JSON.stringify(req.headers, null, 2));
+  console.log('📦 Body:', JSON.stringify(req.body, null, 2));
+  console.log('🔍 Query:', JSON.stringify(req.query, null, 2));
+  
   req.setTimeout(TIMEOUTS.REQUEST_TIMEOUT);
   res.setTimeout(TIMEOUTS.REQUEST_TIMEOUT);
   
-  // Log de début de requête
   const startTime = Date.now();
   res.on('finish', () => {
     const duration = Date.now() - startTime;
@@ -43,7 +45,7 @@ app.use((req, res, next) => {
 
 // File d'attente avec priorité et limitation intelligente
 class ProcessingQueue {
-  constructor(maxConcurrent = 3) { // Augmenté à 3 pour plus de débit
+  constructor(maxConcurrent = 3) {
     this.queue = new Map();
     this.processing = new Set();
     this.maxConcurrent = maxConcurrent;
@@ -88,21 +90,17 @@ class ProcessingQueue {
 
 const processingQueue = new ProcessingQueue(3);
 
-// Vérification FFmpeg optimisée
+// Vérification FFmpeg
 exec('which ffmpeg', (error, stdout, stderr) => {
   if (error || !stdout.trim()) {
     console.error('❌ FFmpeg non trouvé. Installation requise.');
     process.exit(1);
   } else {
     console.log('✅ FFmpeg disponible:', stdout.trim());
-    // Test rapide de FFmpeg
-    exec('ffmpeg -version | head -n 1', (err, out) => {
-      if (out) console.log('🔧 Version FFmpeg:', out.trim());
-    });
   }
 });
 
-// Fonction optimisée pour attendre qu'un fichier soit stable
+// Fonction pour attendre qu'un fichier soit stable
 function waitForFile(filePath, timeout = TIMEOUTS.FILE_WAIT) {
   return new Promise((resolve, reject) => {
     const startTime = Date.now();
@@ -115,14 +113,14 @@ function waitForFile(filePath, timeout = TIMEOUTS.FILE_WAIT) {
       }
       
       if (!fs.existsSync(filePath)) {
-        return setTimeout(checkFile, 200); // Vérification plus rapide
+        return setTimeout(checkFile, 200);
       }
       
       try {
         const stats = fs.statSync(filePath);
         if (stats.size === lastSize && stats.size > 0) {
           stableCount++;
-          if (stableCount >= 3) { // Stable pendant 600ms seulement
+          if (stableCount >= 3) {
             return resolve(stats);
           }
         } else {
@@ -142,7 +140,6 @@ function waitForFile(filePath, timeout = TIMEOUTS.FILE_WAIT) {
 
 // Nettoyage optimisé et non-bloquant
 function cleanupFiles(files) {
-  // Nettoyage asynchrone pour ne pas bloquer
   setImmediate(() => {
     files.forEach(file => {
       try {
@@ -162,7 +159,7 @@ function cleanupFiles(files) {
   });
 }
 
-// Fonction principale optimisée pour la vitesse
+// Fonction principale optimisée
 async function extractScreenshot(videoUrl, timestamp = 5, id = null) {
   const requestId = id || uuidv4();
   const inputPath = `/tmp/input-${requestId}.mp4`;
@@ -172,7 +169,7 @@ async function extractScreenshot(videoUrl, timestamp = 5, id = null) {
   try {
     console.log(`🚀 [${requestId}] Début: ${videoUrl.substring(0, 80)}...`);
     
-    // 1. Téléchargement optimisé avec progress tracking
+    // 1. Téléchargement optimisé
     console.log(`📥 [${requestId}] Téléchargement...`);
     
     const axiosConfig = {
@@ -180,20 +177,18 @@ async function extractScreenshot(videoUrl, timestamp = 5, id = null) {
       url: videoUrl,
       responseType: 'stream',
       timeout: TIMEOUTS.AXIOS_DOWNLOAD,
-      maxRedirects: 5, // Réduit
+      maxRedirects: 5,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36',
-        'Accept': 'video/*,*/*;q=0.8',
-        'Range': 'bytes=0-52428800' // Limite à 50MB pour accélérer
+        'Accept': 'video/*,*/*;q=0.8'
       },
-      maxContentLength: 100 * 1024 * 1024, // 100MB max (réduit)
+      maxContentLength: 100 * 1024 * 1024, // 100MB max
       maxBodyLength: 100 * 1024 * 1024
     };
     
     const response = await axios(axiosConfig);
     const writer = fs.createWriteStream(inputPath);
     
-    // Pipe avec timeout et monitoring
     response.data.pipe(writer);
     
     await new Promise((resolve, reject) => {
@@ -209,7 +204,6 @@ async function extractScreenshot(videoUrl, timestamp = 5, id = null) {
           }
         }
         
-        // Timeout si pas de progrès depuis 30s
         if (Date.now() - lastProgress > 30000) {
           clearInterval(progressMonitor);
           writer.destroy();
@@ -236,26 +230,24 @@ async function extractScreenshot(videoUrl, timestamp = 5, id = null) {
       }, TIMEOUTS.DOWNLOAD_STREAM);
     });
     
-    // Vérification rapide du fichier
     const videoStats = fs.statSync(inputPath);
     console.log(`✅ [${requestId}] Téléchargé: ${(videoStats.size / 1024 / 1024).toFixed(2)}MB`);
     
-    if (videoStats.size < 1024) { // Moins de 1KB = problème
+    if (videoStats.size < 1024) {
       throw new Error('Fichier vidéo trop petit ou corrompu');
     }
     
-    // 2. Extraction FFmpeg ultra-optimisée
+    // 2. Extraction FFmpeg
     console.log(`🎬 [${requestId}] Extraction à ${timestamp}s...`);
     
-    // Commande FFmpeg optimisée pour la vitesse
     const ffmpegArgs = [
       '-hide_banner',
-      '-loglevel', 'error', // Moins de logs
-      '-ss', `${timestamp}`, // Seek avant input pour plus de vitesse
+      '-loglevel', 'error',
+      '-ss', `${timestamp}`,
       '-i', inputPath,
       '-frames:v', '1',
-      '-q:v', '5', // Qualité légèrement réduite pour la vitesse
-      '-vf', 'scale=1280:-1', // Résolution réduite pour la vitesse
+      '-q:v', '5',
+      '-vf', 'scale=1280:-1',
       '-f', 'image2',
       '-y',
       outputPath
@@ -294,14 +286,13 @@ async function extractScreenshot(videoUrl, timestamp = 5, id = null) {
     });
     
     // 3. Vérification et lecture du résultat
-    const imageStats = await waitForFile(outputPath, 10000); // 10s max
+    const imageStats = await waitForFile(outputPath, 10000);
     console.log(`📸 [${requestId}] Image: ${(imageStats.size / 1024).toFixed(1)}KB`);
     
-    if (imageStats.size < 1024) { // Moins de 1KB = problème
+    if (imageStats.size < 1024) {
       throw new Error('Image générée trop petite');
     }
     
-    // Lecture asynchrone non-bloquante
     const imageBuffer = await new Promise((resolve, reject) => {
       fs.readFile(outputPath, (err, data) => {
         if (err) reject(err);
@@ -309,7 +300,6 @@ async function extractScreenshot(videoUrl, timestamp = 5, id = null) {
       });
     });
     
-    // Nettoyage immédiat et non-bloquant
     cleanupFiles([inputPath, outputPath]);
     
     const processingTime = Date.now() - startTime;
@@ -327,57 +317,117 @@ async function extractScreenshot(videoUrl, timestamp = 5, id = null) {
     const processingTime = Date.now() - startTime;
     console.error(`💥 [${requestId}] Erreur après ${processingTime}ms:`, error.message);
     
-    // Nettoyage en cas d'erreur
     cleanupFiles([inputPath, outputPath]);
     
     throw new Error(`Processing failed: ${error.message}`);
   }
 }
 
-// Endpoint principal optimisé pour Make.com
+// Fonction pour extraire les paramètres de différentes sources
+function extractParameters(req) {
+  const params = {
+    videoUrl: null,
+    timestamp: 5,
+    returnBase64: false
+  };
+  
+  // Essayer différentes sources de paramètres
+  const sources = [req.body, req.query, req.params];
+  
+  for (const source of sources) {
+    if (source) {
+      // Différentes variantes de noms de paramètres
+      const urlVariants = ['videoUrl', 'video_url', 'url', 'video', 'link', 'videoLink'];
+      const timestampVariants = ['timestamp', 'time', 'seconds', 'sec', 't'];
+      const base64Variants = ['returnBase64', 'return_base64', 'base64', 'asBase64'];
+      
+      // Chercher videoUrl
+      if (!params.videoUrl) {
+        for (const variant of urlVariants) {
+          if (source[variant]) {
+            params.videoUrl = source[variant];
+            break;
+          }
+        }
+      }
+      
+      // Chercher timestamp
+      for (const variant of timestampVariants) {
+        if (source[variant] !== undefined) {
+          const ts = parseFloat(source[variant]);
+          if (!isNaN(ts) && ts >= 0) {
+            params.timestamp = ts;
+            break;
+          }
+        }
+      }
+      
+      // Chercher returnBase64
+      for (const variant of base64Variants) {
+        if (source[variant] !== undefined) {
+          params.returnBase64 = Boolean(source[variant]);
+          break;
+        }
+      }
+    }
+  }
+  
+  return params;
+}
+
+// Endpoint principal corrigé pour Make.com
 app.post('/screenshot', async (req, res) => {
-  const { videoUrl, timestamp = 5, returnBase64 = false } = req.body;
   const requestId = uuidv4();
   const requestStart = Date.now();
   
   console.log(`🎯 [${requestId}] Nouvelle requête Make.com`);
   
-  if (!videoUrl) {
-    return res.status(400).json({ 
-      error: 'videoUrl required',
-      requestId,
-      success: false
-    });
-  }
-  
-  // Validation URL rapide
   try {
-    new URL(videoUrl);
-  } catch {
-    return res.status(400).json({
-      error: 'URL invalide',
-      requestId,
-      success: false
-    });
-  }
-  
-  // Vérification de la charge
-  if (!processingQueue.canProcess()) {
-    console.log(`⏸️ [${requestId}] Serveur surchargé`);
-    return res.status(429).json({
-      error: 'Serveur surchargé, réessayez dans 30 secondes',
-      requestId,
-      success: false,
-      retryAfter: 30,
-      stats: processingQueue.getStats()
-    });
-  }
-  
-  processingQueue.add(requestId);
-  processingQueue.startProcessing(requestId);
-  
-  try {
-    // Timeout de sécurité pour Make.com (8 minutes max)
+    // Extraction flexible des paramètres
+    const { videoUrl, timestamp, returnBase64 } = extractParameters(req);
+    
+    console.log(`📋 [${requestId}] Paramètres extraits:`, { videoUrl: videoUrl?.substring(0, 50) + '...', timestamp, returnBase64 });
+    
+    // Validation
+    if (!videoUrl) {
+      console.error(`❌ [${requestId}] Aucune URL vidéo trouvée`);
+      return res.status(400).json({ 
+        error: 'videoUrl required. Accepted parameter names: videoUrl, video_url, url, video, link, videoLink',
+        requestId,
+        success: false,
+        receivedParams: Object.keys(req.body || {}).concat(Object.keys(req.query || {}))
+      });
+    }
+    
+    // Validation URL
+    try {
+      new URL(videoUrl);
+    } catch {
+      console.error(`❌ [${requestId}] URL invalide:`, videoUrl);
+      return res.status(400).json({
+        error: 'URL invalide',
+        requestId,
+        success: false,
+        receivedUrl: videoUrl
+      });
+    }
+    
+    // Vérification de la charge
+    if (!processingQueue.canProcess()) {
+      console.log(`⏸️ [${requestId}] Serveur surchargé`);
+      return res.status(429).json({
+        error: 'Serveur surchargé, réessayez dans 30 secondes',
+        requestId,
+        success: false,
+        retryAfter: 30,
+        stats: processingQueue.getStats()
+      });
+    }
+    
+    processingQueue.add(requestId);
+    processingQueue.startProcessing(requestId);
+    
+    // Timeout de sécurité pour Make.com
     const makeTimeout = setTimeout(() => {
       throw new Error('Timeout Make.com - traitement interrompu');
     }, 480000); // 8 minutes
@@ -418,7 +468,6 @@ app.post('/screenshot', async (req, res) => {
     console.error(`💥 [${requestId}] Échec après ${totalTime}ms:`, error.message);
     
     if (!res.headersSent) {
-      // Réponse d'erreur adaptée à Make.com
       const errorResponse = {
         success: false,
         error: error.message,
@@ -437,81 +486,42 @@ app.post('/screenshot', async (req, res) => {
   }
 });
 
-// Endpoint de batch optimisé
-app.post('/batch-screenshot', async (req, res) => {
-  const { videos, timestamp = 5 } = req.body;
-  const batchId = uuidv4();
+// Endpoint GET pour tests faciles
+app.get('/screenshot', (req, res) => {
+  const { url, timestamp = 5 } = req.query;
   
-  if (!Array.isArray(videos) || videos.length === 0) {
+  if (!url) {
     return res.status(400).json({
-      error: 'videos array required',
-      batchId
+      error: 'URL parameter required',
+      example: '/screenshot?url=https://example.com/video.mp4&timestamp=5'
     });
   }
   
-  // Limite adaptée à Make.com (max 3 pour éviter timeouts)
-  if (videos.length > 3) {
-    return res.status(400).json({
-      error: 'Maximum 3 vidéos par batch pour éviter les timeouts Make.com',
-      batchId,
-      suggestion: 'Utilisez plusieurs appels séparés'
-    });
-  }
-  
-  console.log(`📦 [${batchId}] Batch de ${videos.length} vidéos`);
-  
-  const results = [];
-  const batchStart = Date.now();
-  
-  // Traitement séquentiel optimisé
-  for (let i = 0; i < videos.length; i++) {
-    const videoUrl = videos[i];
-    const requestId = `${batchId}-${i + 1}`;
-    
-    // Vérification timeout global du batch
-    if (Date.now() - batchStart > 400000) { // 6.5 minutes max pour le batch
-      console.log(`⏰ [${batchId}] Timeout batch, arrêt à la vidéo ${i + 1}`);
-      break;
-    }
-    
-    try {
-      const result = await extractScreenshot(videoUrl, timestamp, requestId);
-      results.push({
-        index: i,
-        videoUrl: videoUrl.substring(0, 80) + '...',
-        success: true,
-        image: result.image.toString('base64'),
-        size: result.size,
-        processingTime: result.processingTime
-      });
-    } catch (error) {
-      results.push({
-        index: i,
-        videoUrl: videoUrl.substring(0, 80) + '...',
-        success: false,
-        error: error.message
-      });
-    }
-    
-    // Pause courte entre vidéos
-    if (i < videos.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, TIMEOUTS.BATCH_DELAY));
-    }
-  }
-  
-  const batchTime = Date.now() - batchStart;
-  const successful = results.filter(r => r.success).length;
-  
-  console.log(`🏁 [${batchId}] Terminé en ${batchTime}ms: ${successful}/${videos.length} succès`);
-  
+  // Rediriger vers POST avec les mêmes paramètres
+  req.body = { videoUrl: url, timestamp: parseFloat(timestamp) };
+  return app._router.handle(Object.assign(req, { method: 'POST', url: '/screenshot' }), res);
+});
+
+// Endpoint de test simple
+app.get('/test', (req, res) => {
   res.json({
-    batchId,
-    total: videos.length,
-    successful,
-    failed: results.length - successful,
-    results,
-    batchProcessingTime: batchTime,
-    serverStats: processingQueue.getStats()
+    status: 'OK',
+    message: 'Serveur opérationnel',
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      'POST /screenshot': 'Capture d\'écran (JSON body)',
+      'GET /screenshot': 'Capture d\'écran (URL params)',
+      'GET /health': 'État du serveur',
+      'GET /test': 'Test de connexion'
+    },
+    examples: {
+      postBody: {
+        videoUrl: 'https://example.com/video.mp4',
+        timestamp: 5,
+        returnBase64: false
+      },
+      getUrl: '/screenshot?url=https://example.com/video.mp4&timestamp=5'
+    }
   });
 });
 
@@ -545,31 +555,45 @@ app.get('/', (req, res) => {
     <h1>🎬 FFmpeg Screenshot API - Optimisé Make.com</h1>
     <div style="font-family: monospace; background: #f5f5f5; padding: 20px; border-radius: 8px;">
       <p><strong>🟢 Status:</strong> Opérationnel</p>
-      <p><strong>⏱️ Timeouts:</strong></p>
-      <ul>
-        <li>Requête totale: ${TIMEOUTS.REQUEST_TIMEOUT/1000/60} min</li>
-        <li>Téléchargement: ${TIMEOUTS.AXIOS_DOWNLOAD/1000/60} min</li>
-        <li>FFmpeg: ${TIMEOUTS.FFMPEG_PROCESSING/1000} sec</li>
-      </ul>
       <p><strong>📊 Charge actuelle:</strong> ${stats.currentLoad}/${stats.maxLoad}</p>
       <p><strong>📈 Statistiques:</strong> ${stats.processed} traitées, ${stats.errors} erreurs</p>
-      <p><strong>🔗 Endpoints:</strong></p>
+      
+      <h2>🔗 Endpoints</h2>
       <ul>
-        <li><code>POST /screenshot</code> - Capture unique</li>
-        <li><code>POST /batch-screenshot</code> - Batch (max 3)</li>
+        <li><code>POST /screenshot</code> - Capture unique (JSON body)</li>
+        <li><code>GET /screenshot</code> - Capture unique (URL params)</li>
+        <li><code>GET /test</code> - Test de connexion</li>
         <li><code>GET /health</code> - État du serveur</li>
+      </ul>
+      
+      <h2>📝 Exemple Make.com</h2>
+      <pre>
+POST /screenshot
+Content-Type: application/json
+
+{
+  "videoUrl": "https://example.com/video.mp4",
+  "timestamp": 5,
+  "returnBase64": true
+}
+      </pre>
+      
+      <h2>🔧 Paramètres acceptés</h2>
+      <ul>
+        <li><strong>URL vidéo:</strong> videoUrl, video_url, url, video, link, videoLink</li>
+        <li><strong>Timestamp:</strong> timestamp, time, seconds, sec, t</li>
+        <li><strong>Base64:</strong> returnBase64, return_base64, base64, asBase64</li>
       </ul>
     </div>
   `);
 });
 
-// Nettoyage automatique plus agressif
+// Nettoyage automatique
 setInterval(() => {
   console.log('🧹 Nettoyage automatique...');
-  exec('find /tmp -name "input-*.mp4" -mmin +10 -delete', () => {}); // 10 min
+  exec('find /tmp -name "input-*.mp4" -mmin +10 -delete', () => {});
   exec('find /tmp -name "output-*.jpg" -mmin +10 -delete', () => {});
   
-  // Log des stats périodiques
   const stats = processingQueue.getStats();
   const memUsage = process.memoryUsage();
   console.log(`📊 Stats: ${stats.processed} traitées, charge ${stats.currentLoad}/${stats.maxLoad}, RAM ${Math.round(memUsage.heapUsed/1024/1024)}MB`);
@@ -595,8 +619,8 @@ const server = app.listen(PORT, () => {
   console.log(`✅ Prêt pour Make.com !`);
 });
 
-// Configuration serveur HTTP optimisée
+// Configuration serveur HTTP
 server.timeout = TIMEOUTS.REQUEST_TIMEOUT;
 server.headersTimeout = TIMEOUTS.REQUEST_TIMEOUT + 5000;
 server.requestTimeout = TIMEOUTS.REQUEST_TIMEOUT;
-server.keepAliveTimeout = 5000; // Connexions keep-alive courtes
+server.keepAliveTimeout = 5000;

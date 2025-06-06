@@ -15,7 +15,7 @@ WORKDIR /app
 # Copier les fichiers de dépendances
 COPY package*.json ./
 
-# Installer les dépendances Node.js - CORRECTION ICI
+# Installer les dépendances Node.js (production uniquement pour Render)
 RUN npm install --only=production && npm cache clean --force
 
 # Copier le code source
